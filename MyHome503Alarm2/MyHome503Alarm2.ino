@@ -1,9 +1,20 @@
 
 #include "Timer.h"
 #include <EEPROM.h>
-
+//#include <SoftReset.h>
 #include <SPI.h>
+//#define TELNET_MODULE
+//#define GSM_MODULE
+#define COM_MODULE 1 
+
+#ifdef TELNET_MODULE
+
 #include <Ethernet.h>
+
+#endif
+
+
+#ifdef GSM_MODULE
 
 #include "SIM900.h"
 
@@ -11,14 +22,20 @@
 #include "sms.h"
 #include "call.h"
 
+#endif
+
 #include "Time.h"
 
-#define DEBUG_CMD
-#define DEBUG
+//#define DEBUG_CMD
+#//define DEBUG
 #define DEBUG_TELNET 1
 #define DEBUG_NFC 1 
 #define DEBUG_ERROR 1
+boolean alreadyConnected = false;//we'll use a flag separate from client.connected
+boolean newData;
 
+
+#ifdef TELNET_MODULE
 byte mac[] = { 
   0xEE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
   
@@ -28,16 +45,22 @@ IPAddress subnet(255, 255, 255, 0);
 
 EthernetServer server(23);
 EthernetClient clients[4];
+#endif
+
 
 Timer t;
 
+
+ #ifdef GSM_MODULE
 CallGSM call;
 SMSGSM sms;
+#endif
+
 
 int alarm_interrupt = 20;                 //button to test alarm insertion
 
 const int buzzer_pin = 46;
-
+const int siren_pin = 13;
 const int LED_ALARM_ON = 52;
 const int LED_ALARM_OFF = 53;
 const int LED_ERROR_ACK=48;
@@ -80,21 +103,36 @@ enum scenario_t {
   SCENARIO_DORMO,
   SCENARIO_ESCO,
   SCENARIO_VACANZA,
-  TEST,
+  SCENARIO_OFF,
   SCENARIO_UNDEF
 };
 
 enum device_t {                           
   dev_TELNET,
   dev_GSM,
-  dev_KEYPAD,
+  dev_COM,
   dev_SERVER,
   dev_null
 };
 
-
+enum gsm_status_t {
+  GSM_OK,
+  GSM_NOSIGNAL,
+  GSM_OFF,
+  
+};
+enum calling_t {
+  CALLING_START,
+  CALLING_STOP,
+  CALLING_FAIL,
+  CALLING_TIMEOUT,
+};
+/*enum call_t {
+  CALL_ERROR,
+  CALL_
+};*/
 enum action_t {
-  DELAY,
+  START,
   INIT,
   CALL,
   END,
@@ -143,6 +181,9 @@ struct contact_info_t {
 
 
 
+
+void(* Riavvia)(void) = 0;
+
 /*=========================================================   SENSOR CENTRIC  ====================================================*/
 
 /*
@@ -166,22 +207,38 @@ struct contact_info_t {
  */
 
 
-const char * sensor_name[] = { "ing: porta  ",
-                                "ing: lavand ",
-                                "ing: garage ",
-                                "mez: bagno  ",
-                                "mez: studio ",
-                                "mez: camera ",
-                                "mez: volum  ",
-                                "tav: portne ",
-                                "tav: prtfin ",
-                                "tav: volum  ",
-                                "tav: finstr ",
-                                "app: cucina ",
-                                "app: volum  ",
-                                "app: bagno  ",
-                                "app: camera "                                
-                                };                               
+const char * sensor_name[] = { "giu: porta ingresso",
+                                "giu: lavanderia ",
+                                "giu: garage ",
+                                "mezzanino: bagno ",
+                                "mezzanino: studio ",
+                                "mezzanino: camera ",
+                                "mezzanino: volumetrico  ",
+                                "taverna: portone ",
+                                "taverna: porta-finestra ",
+                                "taverna: volumetrico ",
+                                "taverna: finstra ",
+                                "appendice: cucina ",
+                                "appendice: volumetrico  ",
+                                "appendice: bagno  ",
+                                "appendice: camera ",
+                                 "scale: finestra ",
+                                 "scale: volumetrico ",
+                                 "scale: laser ",
+                                 "su: volumetrico" ,
+                                 "su: camera dietro ",
+                                 "su: camera davanti ",
+                                 "su: bagno dietro ",
+                                 "su: bagno davanti ",
+                                 "su: porta ingresso ",
+                                 "su: porta dietro ",
+                                 "mansarda: davanti ",
+                                 "mansarda: dietro ",
+                                 
+                                 
+                                 
+                                                               
+                                };                              
 sensor_info_t sensor[] = {
                               { .name = sensor_name[0], .ID=  1, .type = WINDOW,     .pin = 22 },
                               { .name = sensor_name[1], .ID=  2, .type = WINDOW,     .pin = 23 },
@@ -198,6 +255,18 @@ sensor_info_t sensor[] = {
                               { .name = sensor_name[12], .ID= 13, .type = VOLUMETRIC, .pin = 34 },
                               { .name = sensor_name[13], .ID= 14, .type = PERIMETRIC, .pin = 35 },
                               { .name = sensor_name[14], .ID= 15, .type = VIBRATION,  .pin = 36 },
+                              
+                              { .name = sensor_name[15], .ID=  16, .type = WINDOW,     .pin = 37 },
+                              { .name = sensor_name[16], .ID=  17, .type = VOLUMETRIC,     .pin = 38 },
+                              { .name = sensor_name[17], .ID=  18, .type = PERIMETRIC,     .pin = 39 },
+                              { .name = sensor_name[18], .ID=  19, .type = VOLUMETRIC,     .pin = 40 },
+                              { .name = sensor_name[19], .ID=  20, .type = WINDOW,     .pin = 41 },
+                              { .name = sensor_name[20], .ID=  21, .type = WINDOW,     .pin = 43 },
+                              { .name = sensor_name[21], .ID=  22, .type = WINDOW,     .pin = 44 },
+                              { .name = sensor_name[22], .ID=  23, .type = WINDOW,     .pin = 45 },
+                              { .name = sensor_name[23], .ID=  24, .type = WINDOW,     .pin = 46 },
+                              { .name = sensor_name[24], .ID=  25, .type = WINDOW,     .pin = 47 },
+                                                            
                             
                               
                           };
@@ -225,7 +294,8 @@ enum cmd_t {
   CMD_ON_SCENARIO_VACANZA,
   CMD_ACK,
   CMD_NOT_AUTH,
-  CMD_SENSORS_STATUS
+  CMD_SENSORS_STATUS,
+  CMD_GSM_STATUS
 };
 
 const int BUFSIZE = 20;
@@ -236,9 +306,10 @@ const char * incoming_command[] = {"status",//CMD_STATUS              // possibl
                                     "on dormo",//CMD_ON_SCENARIO_DORMO
                                     "on esco",//CMD_ON_SCENARIO_ESCO
                                     "on vacanza",//CMD_ON_SCNEARIO_VACANZA
-                                    "errore",//CMD_ERROR
+                                    "reset",//CMD_ERROR
                                      "1" , //CMD_ACK               //resp to ACK
-                                     "sensori"//CMD_SENSOR_STATUS
+                                     "sensori",//CMD_SENSOR_STATUS
+                                     "gsm"
                                     };
  const char * outgoing_command[] = {"not used"  ,              // possible commands send from the server
                                     "stato off",
@@ -251,22 +322,26 @@ const char * incoming_command[] = {"status",//CMD_STATUS              // possibl
                                     };
 struct command_t  {
       cmd_t cmd;
+      status_t status;
+      scenario_t scenario;
       const char * incoming_message;  
       const char * outgoing_message;   
                         
 };
 
 const command_t command[] = {
-                             { .cmd = CMD_STATUS,              .incoming_message = incoming_command[0], .outgoing_message = outgoing_command[0]},
-                             { .cmd = CMD_OFF,                 .incoming_message = incoming_command[1], .outgoing_message = outgoing_command[1] },
-                             { .cmd = CMD_ON,                  .incoming_message = incoming_command[2], .outgoing_message = outgoing_command[2] },
-                             { .cmd = CMD_ON_SCENARIO_DORMO,   .incoming_message = incoming_command[3], .outgoing_message = outgoing_command[3] },
-                             { .cmd = CMD_ON_SCENARIO_ESCO,    .incoming_message = incoming_command[4], .outgoing_message = outgoing_command[4] },
-                             { .cmd = CMD_ON_SCENARIO_VACANZA, .incoming_message = incoming_command[5], .outgoing_message = outgoing_command[5] },
-                             { .cmd = CMD_ERROR,               .incoming_message = incoming_command[6], .outgoing_message = outgoing_command[6] },
-                             { .cmd = CMD_WRONG,               .incoming_message = incoming_command[0], .outgoing_message = outgoing_command[7] },
-                             { .cmd = CMD_ACK,                 .incoming_message = incoming_command[7], .outgoing_message = outgoing_command[0] },
-                             { .cmd = CMD_SENSORS_STATUS,      .incoming_message = incoming_command[8], .outgoing_message = outgoing_command[0] }
+                             { .cmd = CMD_STATUS,              .status = STATUS_UNDEF, .scenario = SCENARIO_UNDEF,        .incoming_message = incoming_command[0], .outgoing_message = outgoing_command[0]},
+                             { .cmd = CMD_OFF,                 .status = STATUS_OFF, .scenario = SCENARIO_OFF,          .incoming_message = incoming_command[1], .outgoing_message = outgoing_command[1] },
+                             { .cmd = CMD_ON,                  .status = STATUS_ON, .scenario = SCENARIO_PREDEFINITO,     .incoming_message = incoming_command[2], .outgoing_message = outgoing_command[2] },
+                             { .cmd = CMD_ON_SCENARIO_DORMO,   .status = STATUS_ON, .scenario = SCENARIO_DORMO,           .incoming_message = incoming_command[3], .outgoing_message = outgoing_command[3] },
+                             { .cmd = CMD_ON_SCENARIO_ESCO,    .status = STATUS_ON, .scenario = SCENARIO_ESCO,            .incoming_message = incoming_command[4], .outgoing_message = outgoing_command[4] },
+                             { .cmd = CMD_ON_SCENARIO_VACANZA, .status = STATUS_ON, .scenario = SCENARIO_VACANZA,         .incoming_message = incoming_command[5], .outgoing_message = outgoing_command[5] },
+                             { .cmd = CMD_ERROR,               .status = STATUS_UNDEF, .scenario = SCENARIO_UNDEF,        .incoming_message = incoming_command[6], .outgoing_message = outgoing_command[6] },
+                             { .cmd = CMD_WRONG,               .status = STATUS_UNDEF, .scenario = SCENARIO_UNDEF,        .incoming_message = incoming_command[0], .outgoing_message = outgoing_command[7] },
+                             { .cmd = CMD_ACK,                 .status = STATUS_UNDEF, .scenario = SCENARIO_UNDEF,        .incoming_message = incoming_command[7], .outgoing_message = outgoing_command[0] },
+                             { .cmd = CMD_SENSORS_STATUS,      .status = STATUS_UNDEF, .scenario = SCENARIO_UNDEF,        .incoming_message = incoming_command[8], .outgoing_message = outgoing_command[0] },
+                             { .cmd = CMD_GSM_STATUS,          .status = STATUS_UNDEF, .scenario = SCENARIO_UNDEF,        .incoming_message = incoming_command[9], .outgoing_message = outgoing_command[0] }
+
 
   };
 
@@ -300,7 +375,7 @@ status_t old_status;
  * 
  */
 //char buffer_incoming_command_sms[100];                         // where to store incoming command
-
+unsigned int call_routine_counter_max_loop = 50; 
 unsigned int action_routine_counter_max_loop = 90;  // il tempo di durata del action routine i.e quanto suona la sirenza, fin quando si riprova a chiamare
 unsigned int delay_before_start_call = 110;          // circa 20 sec, tempo di attesa prima di far partire la chiamata e la sirenza. Tempo per spegnere l'allarme da quando si apre la porta.
 unsigned int tempo_di_non_risposta = 30;            // 30 sec, ovvero 1/2 min. se il telefono squilla a vuoto per un tempo superiore a questo viene considerato non risposta. 
@@ -316,6 +391,12 @@ boolean notified[N];
 unsigned int gsm_error_counter;
 char number[20];  //buffer to store the number
 boolean sms_response_unlock, sms_unread; ///
+
+
+
+
+
+
 
 /* =========================================================== ALARM ROUTINE  ======================================================*/
 /*
@@ -380,147 +461,62 @@ void alarmRoutine(){
  *  La FSM termina nello stato END ( Successo) solo se l'allarme viene spendo entro action_routine_counter_max_looop;
  */
 void actionRoutine(){
-     
+       //1. accedni luci
+       //2. per 20 sec fai bip bip
+       //3. spegni luci
+       //4. inizia le chiamate
+       //5 accendi la sirena
+       //6 manda sms, seriale log
+       //7 chiama tutti
+       // spegni sirena dopo timeout chiamata o in caso spegnimento allarme
        Serial.print("\nALARM ACTION");
-       action_t act = DELAY;
-       char call_stato; 
-     
-      for( int i=0; i < N; i++){
-        notified[i] == false;
-      }
-    
-      unsigned int call_counter = N, call_target, call_responses=0, action_routine_counter=0, squilli_a_vuoto=0;  //dovento fare il modulo, è inutile partire da zero call_counter
-  
-      while(action_routine_counter < action_routine_counter_max_loop){ //about 30 min timeout
-              
-              call_target = call_counter % N;                                 // 0..1..2..0..1..2..etc..identify family members. Each cycle has different family member.
-              call_counter++;
-              action_routine_counter++; //TODO: rimuovi call_counter, puoi usare action_routine _counter!
-
-              if( action_routine_counter == action_routine_counter_max_loop ) act = FAIL; // if it goes timeout, visit the FAIL state before leave the cycle.
-
-              
-              switch(act){
-                case DELAY:   //tempo di ritardo prima di iniziare a chiamare.
-                      Serial.print(" . ");   
-                      for(int i=0; i<delay_before_start_call; i++){ // it's about 15-20 sec delay time before start calling
+       action_t act=START;
+       lights(true);
+        #ifdef COM_MODULE
+       _serial(NULL, "alarm event");
+       #endif
+       for(int i=0; i<delay_before_start_call; i++){ // it's about 15-20 sec delay time before start calling
                           commandRoutine();                         // ci sono stati comandi che spengono l'allarme?
+
+                          
                             //blink the red led
                             if( STATUS_OFF == getStatus() ){
-                                  Serial.print("\n Allarm shut down, then stop alarm");
+                                  
                                   act = END;
-                                  beep(action_routine_counter_max_loop);   // serve a spegnere il beep quando si disattiva l'allarme prima del delay.
+                        
+                                 
                             break;
                             }
                             else{
                                   Serial.println("WAIT");
                                   beep(i);             //emetti un suono intermittente. Vedi beep()
-                                  act = CALL;
+                                  
+                                  act = START;
                             }
-                      }
-                     // siren(true);
-                break;
-                case CALL: 
-                     
-                     call_stato=call.CallStatusWithAuth(number,1,3);
-                     delay(120);
-                     if( call_stato == CALL_NONE){
-                         if( notified[call_target] == false ){
-                              squilli_a_vuoto=0;
-                              Serial.print(F("\nCall: "));
-                              Serial.print(family[call_target].name);  
-                              call.Call( family[call_target].SIMposition );
-                                          
-                                 while(1){ // prova a chiamare un membro della famiglia
-                                    delay(1000);
-                                    commandRoutine(); 
-                                    call_stato=call.CallStatusWithAuth(number,1,3);
-                                    squilli_a_vuoto++;    
-                                   /*
-                                    * La chiamata si interrompe se:
-                                    *  1. il chiamato rispone.
-                                    *  2. Si raggiunge il tempo massimo di squilli a vuoto
-                                    *  3. è arrivato il comadno che spegne l'allarme
-                                    *  
-                                    *  Inoltre, tramite il vettore notified[] si tiene traccia di quelli che hanno risposto per evitare di chiamarli nuovamente
-                                    */
-                                          if(call.CallStatusWithAuth(number,1,3) == CALL_ACTIVE_VOICE){
-                                              // se uno risponde prima del timeout, la linea torna libera
-                                                notified[call_target] = true;
-                                                Serial.print(F("\n"));
-                                                Serial.print(family[call_target].name);
-                                                Serial.print(F(" has answer the phone"));
-                                                ++call_responses;
-                                                act = CALL; // volendo saltare la pausa tra una chiamata e la successiva allo stesso numero, basta mettere act=CALL
-                                                delay(1000);
-                                          break;
-                                          }
-                                          else if( squilli_a_vuoto > tempo_di_non_risposta){
-                                                 call.HangUp();
-                                                  Serial.print(F("\n"));
-                                                  Serial.print(family[call_target].name);
-                                                  Serial.print(F(" hasn't answer the phone call in "));   
-                                                  Serial.print(tempo_di_non_risposta);
-                                                  Serial.print(F(" secondi"));
-                                                  act = CALL;  //chiama il prossimo
-                                                  delay(1000); //dai il tempo al gsm di chiudere la chiamata e tornare libero
-                                           break;
-                                           }
-                                           else if ( STATUS_OFF == getStatus() ){
-                                                  Serial.print("\n Allarm shut down, then stop alarm");
-                                                  act = END;
-                                           break;
-                                           }
-                                             
-                             
-                             
-                                 }//while
-                         }
-                                              
-                          else{
-                            if(call_responses == N ){
-                              Serial.print(F("\n Everyone has called"));
-                              // TODO: mettere qui meccanismo di notifica, tutti avvertiti o
-                              //act = END; // if you want the siren to stop after everyone has been alerted. Otherwise
-                            }
-                        }
-                      }
-                      else if( call_stato == CALL_NO_RESPONSE){
-                        Serial.print(F("\n ERROR. GSM DO NOT RESPONSE AT COMMAND."));
-                       
-                        act = FAIL;
-                      }
-                      else if( call_stato == CALL_INCOM_VOICE_NOT_AUTH ||  call_stato ==  CALL_INCOM_VOICE_AUTH  || CALL_COMM_LINE_BUSY){
-                                      call.HangUp();
-                                     Serial.print(F("\n incoming call. hang up."));
-                                      delay(120);
-                        act = DELAY;
-                      }
-                      else{
-                          Serial.print(F("\n ERROR. UNESPECTED BEHAVIOR OF CALL_STATO "));
-                          act = FAIL;
-                      }
-            break;
-            
-             case END:       
-                           siren(false);
-                           Serial.print(F("\n OK. ALARM ACTION LOOP STOP SUCCESS "));
-                           error(ERROR_NONE);
-             return;
-             break;                                
-             case FAIL:         
-                              siren(false);
-                              Serial.print(F("\n ERROR. ALARM ACTION LOOP STOP FAIL  "));
+        }
+        lights(false);
 
-                              error(ERROR_ACTION);
-             return;  
-             break;
-             /*
-              * TODO: default:
-              */
-            }//switch
-     }//while
-                           
+
+        
+         if ( act == END ) {        
+                  beep(delay_before_start_call);
+                #ifdef COM_MODULE
+               _serial(NULL, "alarm stop");
+               #endif
+                                  
+         return;
+         }
+
+
+         siren(true);
+         #ifdef COM_MODULE
+          _serial(NULL, "allarme started");
+         #endif
+         #ifdef GSM_MODULE
+         calling_t calling_behaviour = _call();
+          #endif
+
+         
 }
 
 
@@ -552,356 +548,47 @@ void actionRoutine(){
  *  
  */             
 cmd_t commandRoutine(){
-      cmd_t cmd;
-      device_t dev;
-      status_t status;
-      scenario_t scenario;
      
-      //// A
-          // 1. if receive a message from telnet, store it in the incoming command buffer and return true
-          if ( _telnet(buffer_incoming_command, NULL) == true ){  
-                  // 2. transform the message received in the corresponding  type cmd_t
-                 cmd = getCommand(buffer_incoming_command); 
-                  // 3. set the device which receiced that command
-                 dev = dev_TELNET;                             
-           }
-           else if( _sms(buffer_incoming_command, NULL) == true ) {
-                  cmd = getCommand(buffer_incoming_command); 
-                  dev = dev_GSM;
-                 // Serial.print("\nSMS:");
-                  //Serial.print(buffer_incoming_command);
-                  
-           }
-           else {
-                cmd = CMD_NONE;
-                dev = dev_null;
-           }
-        
-           
-           //// B take action specifeied by the command received
-           if(  cmd != CMD_NONE ){
-                     switch(cmd){
-                          case CMD_STATUS:
-                                  status = getStatus();
-                                  scenario=getScenario();
-                                   sendStatus(status, scenario, dev); 
-                                  //alarm_status = getAlarm(&scenario);
-                                  Serial.print("\n CMD_STATUS"); 
-                               //   statusRoutine();
-                                  
-                          break;
-                          case CMD_OFF:
-                                   setStatus(STATUS_OFF);
-                                  // resp = responseCommand(CMD_OFF);
-                                  // configScenario( INDEFINITO, dev);
-                                   Serial.print("\n CMD_OFF");
-                                  
-                          break;
-                          case CMD_ON: // if no scenario is specified, then choose the scenario depends from the  device
-                                    setStatus(STATUS_ON);
-                                    if( dev == dev_TELNET )   {       
-                                      setScenario(SCENARIO_ESCO); 
-                                      configScenario(SCENARIO_ESCO);
-                                     // resp = responseCommand(CMD_ON_SCENARIO_ESCO);
-                                      Serial.print("\n CMD_ON auto SCENARIO_ESCO");
-                                      }
-                                    else if( dev == dev_GSM )  {   
-                                      setScenario(SCENARIO_VACANZA); 
-                                      configScenario(SCENARIO_VACANZA); 
-                                     // resp = responseCommand(CMD_ON_SCENARIO_VACANZA);
-                                      Serial.print("\n CMD_ON auto SCENARIO_VACANZA");
-                                      }
-                                    else if( dev == dev_SERVER ) { 
-                                      setScenario(SCENARIO_DORMO);
-                                      configScenario(SCENARIO_DORMO); 
-                                     // resp = responseCommand(CMD_ON_SCENARIO_DORMO);
-                                      Serial.print("\n CMD_ON auto SCENARIO_DORMO");
-                                      }
-                                   
-                          break;
-                          case CMD_ON_SCENARIO_DORMO: 
-                                  setStatus(STATUS_ON);                                 // 1.  set the alarm in status ON (write in EEPROM)
-                                  setScenario( SCENARIO_DORMO);                         // 2. set the scenario (write in EEPROM)
-                                  configScenario(SCENARIO_DORMO);                       // 3. exclude sensors depends on scenario
-                                  //resp = responseCommand(CMD_ON_SCENARIO_DORMO);        // 4. choose the response to this command
-                                  Serial.print("\n CMD_ON_SCENARIO_DORMO");
-                          break;
-                          case CMD_ON_SCENARIO_ESCO: 
-                                    setStatus(STATUS_ON);
-                                    setScenario( SCENARIO_ESCO);
-                                    configScenario(SCENARIO_ESCO);
-                                   // resp = responseCommand(CMD_ON_SCENARIO_ESCO);
-                                    Serial.print("\n CMD_ON_SCENARIO_ESCO");
-                          break;
-                          case CMD_ON_SCENARIO_VACANZA: 
-                                    setStatus(STATUS_ON);
-                                    setScenario( SCENARIO_VACANZA);
-                                    configScenario(SCENARIO_VACANZA);
-                                   // resp = responseCommand(CMD_ON_SCENARIO_VACANZA);
-                                    Serial.print("\n CMD_ON_SCENARIO_VACANZA");
-                          break;
-                          case CMD_ACK: 
-                                     Serial.print("\n CDM_ACK");
-                                     ack_counter=0;                                       // received ack, then restore ack_counter at zero
-                                    // resp = responseCommand(CMD_ACK);
-                          break;
-                          case CMD_WRONG: 
-                                    //  resp = responseCommand(CMD_WRONG);
-                                       // no action needed..
-                          break;
-                          case CMD_SENSORS_STATUS:
-                                      //  resp = responseCommand( CMD_SENSORS_STATUS );
-                                        sendSensorsStatus();                            // assemble a list of all sensor and send ID,name and status on/off only via telnet
-                                  
-                          break;
-                          
-                        /*  default:  is_command = false;
-                          break;*/
-                     }
-                     
-                      //// C
-                    /* if( cmd==CMD_STATUS || cmd==CMD_OFF || cmd==CMD_ON_SCENARIO_DORMO ||  cmd==CMD_ON_SCENARIO_ESCO ||  cmd==CMD_ON_SCENARIO_VACANZA){
-                         status = getStatus();
-                         scenario = getScenario();                     
-                         resp = responseStatus(status, scenario);  // get which output message must be in response at the cmd received
-                      }
-                      else if( cmd == CMD_WRONG ) resp = 6;
-                      */
-                      const char * rispondi = responseCommand(cmd);
-                    
-                       if( rispondi != outgoing_command[0] ) {
-                       // Serial.print("\n transmit something");
-                               switch(dev){
-                               // 5. response to the command received if the command have sense
-                               case dev_TELNET: 
-                                              _telnet(NULL, rispondi); 
-                               break;
-                               case dev_GSM: //Serial.print("\n now trqansmit:"); Serial.print(rispondi);
-                                              _sms(NULL, rispondi );
-                               break;
-                              }                        
-                       }
-           
-            }
-}
-
-
-/*
- * Scelte progettualu:
- * 1. Il ocntrollo degli errori viene fatto ogni minuto e per non interrompere il codice nel suo funzionameto normale. 
- *   Solo dopo più controlli falliti al check periorico si fa scattare l'errore. Lo svantaggio è che i tempi per rilevare l'errore sono
- *   di qualche minuto. D'altra parte le normali funzioni sono più snelle e veloci.
- *    
- *   gli errori controllati sono relativi al telent e al gsm.
- *   Eventuali errori telent sono riconosciuti attraverso un contatore ack. Periodicamente (ogni minuto) l'allarme manda un ack, inviando un messaggio con lo stato attuale in broadcast.
- *   L'arduino che gestisce l'NFC ( che è sempre attivo) risponde inviando il sui ID. 
- *   Tutte le volte che viene ricevuto un messaggio di quel tipo ( '1' associato a CMD_ACK) il contatore ack viene resettato a zero.
- *   La funzione statuwRoutine ogni minuto incremente il contatore di 1. Per cui se non riceve ack dopo 3 minuti, si puà dedurre che c'è un problema sulla connessione telnet.
- *   Non è dato sapere se questo problema sia sul 'server' o sul 'clinet', ma l'uso dell'ack è un modo sicuro per trovare u errore sul telnet.
- *   
- *   Gli errori del GSM sono rilevati diversamente. La funzione _sms() viene continuamente chiamata dalla commandRoutine() per sapere se ci sono sms non letti. 
- *   Se il modulo GSM non funziona alla funzione readSMS ritorna -1 o -2. Tutte le volte che questo accade vien incrementato un contatore error_gsm. 
- *   Ogni minuto viene letto lo stato di questo contatore. Se supera la solgia di 2, allora si resetta e si segnale l'errore sul gsm.
- *   
- */
-void statusRoutine(){                               
-       
-     //  ack_counter++;
-       //error_counter++;
+      device_t dev=dev_null;
       
-       
-    /*   if( ack_counter > 2 ) {
-          Serial.print("\nLOOSE ACK");
-          _blink( LED_STATUS_ACK, HIGH);
-           error(ERROR_ACK);
-          
-        }
-        else {
-           //error_counter = 0;
-          _blink( LED_STATUS_ACK, LOW);
-        }
 
-     */   
-
-        status_t status = getStatus();
-        scenario_t scenario = getScenario();
-             
-        if( status == STATUS_ON){
-           digitalWrite(LED_ALARM_ON,  HIGH);
-           digitalWrite(LED_ALARM_OFF, LOW);          
-        }
-        else if (status == STATUS_OFF){
-           digitalWrite(LED_ALARM_ON,  LOW);
-           digitalWrite(LED_ALARM_OFF, HIGH);   
-        }
-        else{
-           digitalWrite(LED_ALARM_ON,  LOW);
-           digitalWrite(LED_ALARM_OFF, LOW);   
-        }
-            
-       sendStatus(status, scenario, dev_TELNET);
-
-
-     if( gsmStatus() == true ) {
-        Serial.print("\nGSM is OK");
-     }
-     else{
-        Serial.print("\nGSM is ERROR");
-     }
+     int cmdRx = receiveCommand(buffer_incoming_command, &dev);
+   
+    if(  cmdRx >= 0 ){
+      
+    
+     if( command[cmdRx].cmd == CMD_OFF || command[cmdRx].cmd == CMD_ON || command[cmdRx].cmd == CMD_ON_SCENARIO_DORMO ||  command[cmdRx].cmd == CMD_ON_SCENARIO_ESCO ||  command[cmdRx].cmd == CMD_ON_SCENARIO_VACANZA) {
         
-
-
-     
-  /*      if ( gsm_error_counter > 2 ){
-           gsm_error_counter = 0;
-        // Serial.print("\nLOOSE ACK");
-          _blink( LED_STATUS_GSM, HIGH );
-          error(ERROR_GSM);
-         
-        }
-        else {
-           //error_counter = 0;
-          _blink( LED_STATUS_GSM, LOW);
-        }*/
-       
-  
-       
-        
-}
-
-void switchAlarm(){
+          setStatus(command[cmdRx].status);
+          setScenario(command[cmdRx].scenario );
+          configScenario(command[cmdRx].scenario );
+          #ifdef DEBUG_CMD
+          print_command(command[cmdRx].cmd);
+          #endif
  
-        delay(1);
-        if(digitalRead(alarm_interrupt) == LOW ){
-          _DEBUG2("\nSet alarm true:");
-          setStatus(STATUS_ON);
-          setScenario(SCENARIO_PREDEFINITO);
-          configScenario(SCENARIO_DORMO);
-        }
-        else{
-          _DEBUG2("\nSet alarm false:");
-          setStatus(STATUS_OFF);
-          
-          configScenario(SCENARIO_UNDEF);
-        }
-        
-        
-        return;
-}
-
-
-void setup() 
-{  
- ack_counter = 0;   
-  Serial.begin(115200);
-
-Serial.print("\nALARM TEST\n");
-
-  Serial.print("\n N number of call: "); Serial.print(N);
-   Serial.print("\n Ns number of sensor: "); Serial.print(Ns);
-  
-
-pinMode(LED_ALARM_ON, OUTPUT);
-pinMode(LED_ALARM_OFF, OUTPUT);
-
-pinMode(LED_ERROR_GSM, OUTPUT);
-pinMode(LED_ERROR_ACK, OUTPUT);
-pinMode(LED_ERROR_ACTION, OUTPUT);
-
-
-
-  pinMode(alarm_interrupt, INPUT);
-  attachInterrupt(digitalPinToInterrupt(alarm_interrupt), switchAlarm, CHANGE);
-  delay(1000);
-  
-  int r = t.every(60000,  statusRoutine , (void*)0);
-
-  //memset(buffer_incoming_command_, 0, 20);
-
-  /*===============================================        ALARM SKELETON   ( SETUP )      ====================================================*/
-
-
-      if( Ns >= 32) {
-      //  _DEBUG("error: too many sensors, i pin del mega non bastano!");
-        return; 
-      }
-     for(int i = 0; i < Ns; i++){
-      // sensor[i].ID = (i+1);
-      // sensor[i].pin = (i+22);  
-       pinMode(sensor[i].pin, INPUT_PULLUP);     // when pullup, read LOW when closed to GND and HIGH when the wiring is floating without reference.
-      // sensor[i].type = get_sensor_type(sensor[i].ID);
-       delay(100);
-      if( digitalRead(sensor[i].pin) == LOW){  
-       
-      //  _DEBUG2("\nOLD STATE FALSE");
-       sensor[i].old_state = false; //normal state, the contact is close
-      }
-      else{
-     //     _DEBUG2("\nOLD STATE TRUE");
-        sensor[i].old_state =true;
-      }
-      }
-
-  /*===============================================        TELNET   ( SETUP )      ====================================================*/
-  
-  Serial.print("\nInitialize ethernet shield");
-  // initialize the ethernet device
-  Ethernet.begin(mac, ip, gateway, subnet);
-  // start listening for clients
-  server.begin();
-  // Open serial communications and wait for port to open:
-  Serial.println(Ethernet.localIP());
+         replyCommand(cmdRx, dev);
+     }
+     else if( command[cmdRx].cmd == CMD_STATUS ) {
       
+        sendStatus(dev);
+     }
+     else if(command[cmdRx].cmd == CMD_SENSORS_STATUS){
+        sendSensorsStatus(dev); 
+     }
+     else if(command[cmdRx].cmd == CMD_GSM_STATUS){
+        sendGsmStatus(dev); 
+     }
+     else if(command[cmdRx].cmd == CMD_ERROR){    
+      delay(1000);
+       Riavvia();
+     }
+     else if(command[cmdRx].cmd == CMD_WRONG){
+       replyCommand(cmdRx, dev);
+     }
 
-/*===============================================       GSM   ( SETUP )      ====================================================*/
-if (gsm.begin(9600)){
-    _DEBUG("\nstatus=READY");
-    }
-  else {
-    _DEBUG("\nstatus=IDLE");
-   // error(ERROR_GSM);
     }
 
-  
-
-         
 }
-/*
- * Il funzionamento delo sketch  è piuttosto semplice. 
- * Un sitema di allarme prevede due principali insiemi di azioni. 
- * Da un lato la lettura dei sensori e dall'altro l'interazione con l'utente.
- * L'interazione con l'utente è realizzata dalla commandRoutine(). Questa routine 
- * 1. verifica la presenza di comandi che l'utente ha inviato all'allarme o tramite Telnet o tramite sms.
- * 2. interpreta il significato di questi comandi ed effettua le azioni ad essi associate. 
- *    In particolare, l'attivazione dell'allarme e la selezione di uno scenario consistono nello scrivere in EEPROM i valori a cui si riferiscono.
- * 3. Risponde ai comandi inviati   
- * 
- * L'altra routine, allarmRoutine() si occupa di: 
- * 1. leggere i sensori
- * 2. leggere la EEPROM per conoscere lo stato dell'allarme (accesso/spento)
- * 3. se l'allarme è attivo e un sensore è passato da chiuso (off) ad aperto (on) 
- *    chiama actionRoutine() che si occupa delle azioni da svolgere in caso di rilevazione dell'intuso.
- * 
- */
-
-
-
-
-void loop() 
-{  
-  
-
-
-     
-      alarmRoutine();
-       commandRoutine();
-       
-         t.update();
-   
-      
-} // end loop
-
-   
 
 /* ========================================================         ALARM FUNCTION       =============================================================*/
 /*
@@ -939,6 +626,14 @@ void setScenario(scenario_t current_scenario){
      
       EEPROM.write(EEPROM_scenario_addr, 2);
      }
+     if( current_scenario == SCENARIO_OFF){
+     
+      EEPROM.write(EEPROM_scenario_addr, 3);
+     }
+     if( current_scenario == SCENARIO_PREDEFINITO){
+     
+      EEPROM.write(EEPROM_scenario_addr, 4);
+     }
 }
 
 status_t getStatus(){
@@ -964,6 +659,12 @@ scenario_t getScenario(){
     if( 2 == EEPROM.read(EEPROM_scenario_addr) ){
       return SCENARIO_VACANZA;
      }
+     if( 3 == EEPROM.read(EEPROM_scenario_addr) ){
+      return SCENARIO_OFF;
+     }
+      if( 4 == EEPROM.read(EEPROM_scenario_addr) ){
+      return SCENARIO_PREDEFINITO;
+     }
 
 }
 /*
@@ -974,21 +675,7 @@ scenario_t getScenario(){
  * Quello che qui non si vede è che l'NFC di default  manda il comando SCENARIO_ESCO. 
  * In tal caso la configurazione automatica non viene fatta sul server ma sul clinet.
  */
-scenario_t getDefaultScenario( device_t device) {
-     
-      if( device == dev_TELNET){
-       return SCENARIO_DORMO;
-      }
-      else if( device == dev_GSM){
-        return  SCENARIO_VACANZA;
-      }
-      else if( device == dev_SERVER){
-        return  SCENARIO_DORMO;
-      }
-      else if( device == dev_KEYPAD || device == dev_null){
-        return  TEST;
-      }
-}  
+
 /*
  * Una volta ricevuto uno scenario è possibile configurare i sensori affinché ripettino quello scenario.
  * Ad esmpio SCENARIO_DOMRO deve disttivare tutti i volumetrici.
@@ -1027,15 +714,29 @@ void configScenario(scenario_t scenarioX){
 
       
        break;
-      case TEST:  for(int i=0; i<Ns; i++){
-                         sensor[i].sensor_exclusion = true;
-                   }
-                        sensor[0].sensor_exclusion = false;
+       case SCENARIO_PREDEFINITO:
+       //TODO: è uguale ad dormo, da rifare a paicere.
+            for(int i=0; i<Ns; i++){
+              
+              if( sensor[i].type == PERIMETRIC ) {
+                sensor[i].sensor_exclusion = true;
+              }
+              else{
+                sensor[i].sensor_exclusion = false;
+              }
+         }       
+      
+
+       break;
+     
+      case SCENARIO_OFF:
+         for(int i=0; i<Ns; i++){
+        sensor[i].sensor_exclusion = true;
+       }
       break;
+      
     }
- #ifdef DEBUG
- printSensors();
- #endif
+ 
  return;
 }
 /*
@@ -1047,7 +748,8 @@ void configScenario(scenario_t scenarioX){
  * Per cui per trovare la lunghezza della parola si usano un or con entrambe le ocndizioni di arresto.
  * Inoltra notare che len parte a contare da 0 per cui, dicendomi la posizione del carattere di fine stringa, mi dice la  lunghezza effettiva della parola.
  */
-cmd_t getCommand(char * message){
+
+int associateCommand(char * message){
   //Serial.print("\nmess:"); Serial.print(message);
   for(int i=0; i<Nc; i++){
     int len=0;
@@ -1064,27 +766,92 @@ cmd_t getCommand(char * message){
     }
     
     if(memcmp(message, command[i].incoming_message, (len)) == 0 ){ 
-      return command[i].cmd;
+      return i;
       print_command(command[i].cmd);
     }
+   
      
   }
-  return CMD_WRONG; //no commands match this message txt
+  // se non hai fatto return prima è perché è sbagliato il programma
+  for(int k=0; k<Nc;k++){
+        if( command[k].cmd == CMD_WRONG){
+          return k;
+        }
+      }
+  //no commands match this message txt
 }
 /*
- * Associa al comando cmd (ricevuto e già interpretato) il messaggio che deve essere inviato in risposta a quel comado.
- * Tale associazione è definta nell header in struct command_t command.
- * Nel caso un comando non necessiti di avere una risposta command[i].outgoing_message è NULL ( vedi coomand struct nell header). 
+ *TODO
  */
-const char * responseCommand(cmd_t cmd){
- 
-  for(int i=0; i<Nc; i++){
-    if( command[i].cmd == cmd ) {
-      
-      return command[i].outgoing_message;
-    }
-  }
+
+
+
+int receiveCommand(char * receive_buffer, device_t * dev){
+int res = -1;
+          #ifdef TELNET_MODULE
+              if ( _telnet(receive_buffer, NULL) == true ){  
+                     res = associateCommand(receive_buffer); 
+                     *dev = dev_TELNET;                             
+               }
+           #endif
+
+           
+           #ifdef GSM_MODULE
+               if( _sms(receive_buffer, NULL) == true ) {
+                      res = associateCommand(receive_buffer); 
+                      *dev = dev_GSM;                  
+               }
+           #endif
+
+           
+           #ifdef COM_MODULE
+               if(_serial(receive_buffer, NULL) == true ) {
+                      res = associateCommand(receive_buffer); 
+                      *dev = dev_COM;
+               }
+           #endif
+           if( res != -1){
+            _DEBUG("\n\nreceived message:");
+            _DEBUG(receive_buffer);
+             _DEBUG("\nreceived command numebr:");
+             _DEBUGINT(res);
+              _DEBUG("\n");
+           }
+  return res;
 }
+
+void replyCommand(int cmdNum, device_t dev){
+                      const char * reply; //= responseCommand(cmd);
+                      
+                                  
+                       reply=command[cmdNum].outgoing_message;
+                  
+                       if( reply != outgoing_command[0] ) {
+
+                            #ifdef TELNET_MODULE
+                            if( dev == dev_TELNET){
+                                _telnet(NULL, reply); 
+                            }
+                            #endif
+
+                            #ifdef GSM_MODULE
+                            if( dev == dev_GSM ){
+                               _sms(NULL, reply );
+                            }
+                            #endif
+
+                            #ifdef COM_MODULE
+                            if( dev == dev_COM ){
+                               _serial(NULL, reply );
+                            }
+                            #endif  
+                           
+                       }
+}
+
+
+
+
 /*
  * Svolge l'azione di inviare stato e scenario in broadcast.
  * Questa funzione viene sia chiamata in modo periodico da  statusRoutine() 
@@ -1097,47 +864,45 @@ const char * responseCommand(cmd_t cmd){
  *     Il fatto e' i messaggi di risposta ad un comando corrispondono con quelli di notifica dello stato e scenario.
  *     In alternativa basterebbe creare un buf dento la funzione che assempla il messaggio i.e 'stato on dormo' a seconda delle varibili lette
  */
-void sendStatus(status_t currentStatus, scenario_t currentScenario, device_t dev) {      
-     if( dev == dev_TELNET){                   
-        if( currentStatus == STATUS_OFF ){
-          _telnet(NULL, outgoing_command[1] );
-        }
-        else if(currentStatus == STATUS_ON && currentScenario == SCENARIO_DORMO){
-           _telnet(NULL, outgoing_command[3] );
-        }
-        else if(currentStatus == STATUS_ON && currentScenario == SCENARIO_ESCO){
-           _telnet(NULL,outgoing_command[4] );
-        }
+void sendStatus( device_t dev) {    
+    status_t currentStatus  = getStatus();
+    scenario_t currentScenario = getScenario();
 
-        else if(currentStatus == STATUS_ON && currentScenario == SCENARIO_VACANZA){
-           _telnet(NULL, outgoing_command[5] );
-        }
-     }
-     else if( dev == dev_GSM ){
-           if( currentStatus == STATUS_OFF ){
-          _sms(NULL, outgoing_command[1] );
-        }
-        else if(currentStatus == STATUS_ON && currentScenario == SCENARIO_DORMO){
-           _sms(NULL, outgoing_command[3] );
-        }
-        else if(currentStatus == STATUS_ON && currentScenario == SCENARIO_ESCO){
-           _sms(NULL,outgoing_command[4] );
-        }
 
-        else if(currentStatus == STATUS_ON && currentScenario == SCENARIO_VACANZA){
-           _sms(NULL, outgoing_command[5] );
-        }
-     }
+    for(int i=0; i< Nc; i++){
+      if( command[i].status == currentStatus && command[i].scenario == currentScenario ) {
 
+
+
+                            #ifdef TELNET_MODULE
+                            if( dev == dev_TELNET){
+                                _telnet(NULL, command[i].outgoing_message ); 
+                            }
+                            #endif
+
+                            #ifdef GSM_MODULE
+                            if( dev == dev_GSM ){
+                               _sms(NULL, command[i].outgoing_message );
+                            }
+                            #endif
+
+                            #ifdef COM_MODULE
+                            if( dev == dev_COM ){
+                               _serial(NULL, command[i].outgoing_message );
+                            }
+                            #endif
+        
+      }
+    }
    
 }     
 /*
  * sendStatus è una azione che consiste nel risponde al clinet che ha inviato 'status' con un messaggio 
  * contenente la lista di tutti i sensori, l'ID associato, il nome mnemonico, il loro stato (on/off) e se sono esclusi dallo scenario corrente.
  */
-void sendSensorsStatus(){
+void sendSensorsStatus(device_t dev){
     
-    unsigned char buff[30];
+    unsigned char buff[40];
     unsigned char stringTAB[] = " ";
     unsigned char stringEXC = 'x';
     unsigned char stringNULL = '\0';
@@ -1157,6 +922,10 @@ unsigned char stato_off[] = "off ";
              stringID[0]='1';
            stringID[1] = (unsigned char)(sensor[i].ID - 10 ) + '0';
           }
+           if( (sensor[i].ID) >= 20 && (sensor[i].ID) < 30 ){
+             stringID[0]='2';
+           stringID[1] = (unsigned char)(sensor[i].ID - 20) + '0';
+          }
     
      
           if( sensor[i].state == false) {
@@ -1166,26 +935,86 @@ unsigned char stato_off[] = "off ";
            stringSTATUS = stato_on;
           }
     
+          int len = strlen(sensor[i].name);
           
           memcpy(buff,&stringID, 2);
           memcpy(buff+2,&stringTAB, 1);
-          memcpy(buff+3,sensor[i].name,12);
-          memcpy(buff+15,stringSTATUS,4);
+          memcpy(buff+3,sensor[i].name,len);
+          memcpy(buff+len+3,stringSTATUS,4);
               if( sensor[i].sensor_exclusion == true ){
-              memcpy(buff+19, &stringEXC, 1);
+              memcpy(buff+len+7, &stringEXC, 1);
               }
               else{
-              memcpy(buff+19, &stringTAB, 1);
+              memcpy(buff+len+7, &stringTAB, 1);
                }
-          memcpy(buff+20, &stringNULL, 1);
-    
+          memcpy(buff+len+8, &stringNULL, 1);
+          #ifdef TELNET_MODULE
+          if( dev == dev_TELNET){
           _telnet(NULL, (const char *)buff);
+          }
+          #endif
+
+          #ifdef COM_MODULE
+          if( dev == dev_COM){
+          _serial(NULL,  (const char *)buff);
+          }
+          #endif
+
+
+         /* messo qui manderebbe tanti sms quanti sono i sensori...non molto bello
+          *  #ifdef GSM_MODULE
+          if( dev == dev_GSM ) {
+            _sms(NULL, (const char *)buff);
+          }
+          #endif
+          */
        }
 
-         gsmSignalStrength();
+        
        
 }
-      
+   
+void sendGsmStatus(device_t dev){
+const char * buff;
+const char gsm_not_defined[] = "gsm not defined\0";
+const char gsm_ok[] = "gsm ok\0";
+const char gsm_error[] = "gsm error\0";
+const char gsm_no_signal[] = "gsm no signal\0";
+
+
+buff = gsm_not_defined;
+
+ #ifdef GSM_MODULE
+ if (  gsm_AT_OK() == true ) {
+  if( gsm_Signal_Strength() == true ) {
+    buff = gsm_ok;
+  }
+  else{
+    buff = gsm_no_signal;
+  }
+ }
+ #endif
+
+  
+          #ifdef TELNET_MODULE
+          if( dev == dev_TELNET){
+          _telnet(NULL, (const char *)buff);
+          }
+          #endif
+
+          #ifdef COM_MODULE
+          if( dev == dev_COM){
+          _serial(NULL,  (const char *)buff);
+          }
+          #endif
+
+
+          #ifdef GSM_MODULE
+          if( dev == dev_GSM ) {
+            _sms(NULL, (const char *)buff);
+          }
+          #endif
+}   
 void printSensors(){
   
   for(int i=0; i<Ns; i++){
@@ -1211,109 +1040,53 @@ void printSensors(){
 /* =================================================================== TELNET ( FUNCTIONS) =========================================== */
 boolean _telnet(char * receive_buffer,const char * transmit_buffer){
   
-      EthernetClient client = server.available();
-      boolean data_available = false;
-
-      /* #ifdef AUTH_PIN         
-                                 
-                                  if ( authorized == false && enter_pin == true) {
-                                // delay(1000);                                    
-                                 Serial.print("\nEnter PIN");
-                                // server.write("Enter Pin: ");
-                                 // client.print("Enter Pin: ");
-                                  client.println();
-                                  enter_pin = true;
-                                 
-                                  }
-      #endif*/
-          if (client) {
-                  boolean newClient = true;
-                  for (byte i=0;i<4;i++) {
-                    if (clients[i]==client) {
-                      newClient = false;
-                      break;
-                    }
-                  }
-                if (newClient) {
-                  Serial.print("\nNew Client");
-                  for (byte i=0;i<4;i++) {
-                    if (!clients[i] && clients[i]!=client) {
-                  //  if (!(clients[i].connected()) && clients[i]!=client) {
-                       clients[i] = client;
-                      client.flush();
-                          clients[i].print("0");
-                           clients[i].println();    
-                      break;
-                         // client.stop() invalidates the internal socket-descriptor, so next use of == will allways return false;
-                         // clients[i].stop();
-                        }
-                        
-                    //  clients[i] = client;
-                     // client.stop();
-                          //clients[i].print("welcome");  
-                          //clients[i].println();
-                     // break;
-                    }
-                  }
-               int index = 0;
-               data_available = false;
-               if(receive_buffer != NULL ) {
-                while( client.connected() && data_available == false ){
-                          if (client.available() > 0) {
-                                            char c = client.read();
-                                            
-                                             if (c == '\n' ){
-                                              receive_buffer[index] = '\0';
-                                              data_available = true;
-                                             }
-                                             
-                                             else {
-                                                        receive_buffer[index] = c;
-                                                        index++;
-                                                          if (index >= BUFSIZ){
-                                                                 index = BUFSIZ -1;
-                                                          }
-                                             }
-                              }
-                        }
-                }
-                if(data_available == true ) {
-                  Serial.print("\nrx: "); Serial.print(receive_buffer);
-                }
-                       #ifdef  AUTH_PIN
-                                       if( strncmp( receive_buffer, pin, strlen(pin) ) == 0 && authorized == false ) {
-                                        authorized = true;
-                                        client.write("PIN OK\n\r");
-                                        data_available = false; //the PIN is not a command to be read..
-                                       }
-                                       if( authorized == false ){
-                                         client.write("PIN ERROR\n\r");
-                                        for (byte i=0;i<4;i++) {
-                                                    if (clients[i]==client) {
-                                                        // client.stop() invalidates the internal socket-descriptor, so next use of == will allways return false;
-                                                        clients[i].stop();
-                                                      }
-                                        }
-                                        data_available = false; //the PIN is not a command to be read..
-                                       }
-                        #endif
-          } // if( client) 
-          if( transmit_buffer != NULL ){
-                        // Serial.print("\n Transmit buffer NOT NULL");
-                        Serial.print("\ntx: ");
-                        Serial.print(transmit_buffer);
-                        server.write(transmit_buffer);
-                        server.write('\n');
-                        server.write('\r');
-          }
-          for (byte i=0;i<4;i++) {
-                      if (!(clients[i].connected())) {
-                          // client.stop() invalidates the internal socket-descriptor, so next use of == will allways return false;
-                          clients[i].stop();
-                        }
-          }
-  return data_available;
 }
+boolean _serial(char * receive_buffer,const char * transmit_buffer){
+
+                static byte index = 0;
+                char endMarker = '\n';
+                char c;
+                
+                boolean rx=false;
+                boolean data_available = false;
+          if(receive_buffer != NULL){
+                  while(Serial.available() > 0 && newData==false) // Don't read unless
+                  {   
+                          c = Serial.read(); // Read a character
+                          if( c != endMarker){
+                            receive_buffer[index] = c; // Store it
+                            index++; // Increment where to write next
+                            rx=true;
+                                if(index >= 20){
+                                  index=19;
+                                }
+                          }
+                          else{
+                             receive_buffer[index] = '\0'; // terminate the string
+                             index = 0;
+                             newData = true;     
+                          }    
+                  }
+
+                  if(newData==true){
+                     newData = false;
+                   // cmd_t cmd = getCommand(receive_buffer);
+                    //print_command(cmd);
+                    data_available = true;
+                  }
+                  
+                 
+             }
+    
+    if( transmit_buffer != NULL ){
+      Serial.print(transmit_buffer);
+      Serial.print("\n\r");
+    }
+   return data_available;
+}
+
+ 
+
 
  
 /* =================================================================== GSM ( FUNCTIONS) =========================================== */
@@ -1328,10 +1101,147 @@ boolean _telnet(char * receive_buffer,const char * transmit_buffer){
  *   
  *  
  */
-boolean _sms(char * receive_buffer, const char * transmit_buffer){
-                   
- 
+ #ifdef GSM_MODULE
+void gsm_init(){
+
+if (gsm.begin(9600)){
+    _DEBUG("\nstatus=READY");
+   _DEBUG("wait");
+   
+    }
+  else {
+    _DEBUG("\nstatus=IDLE");
+    //gsmStatus();
+   // error(ERROR_GSM);
+    }
+
+ }
+ calling_t _call(){           
   
+          _DEBUG("\nCALLING");
+      
+       char call_stato; 
+       calling_t calling = CALLING_START;
+       
+        
+      for( int i=0; i < N; i++){
+        notified[i] == false;
+      }
+    
+      unsigned int call_counter = N, call_target, call_responses=0, call_routine_counter=0, squilli_a_vuoto=0;  //dovento fare il modulo, è inutile partire da zero call_counter
+  
+      while(call_routine_counter <= call_routine_counter_max_loop){ //about 30 min timeout
+              
+              call_target = call_counter % N;                                 // 0..1..2..0..1..2..etc..identify family members. Each cycle has different family member.
+              call_counter++;
+              call_routine_counter++; //TODO: rimuovi call_counter, puoi usare action_routine _counter!
+
+              if( call_routine_counter == call_routine_counter_max_loop ) calling = CALLING_TIMEOUT; // if it goes timeout, visit the FAIL state before leave the cycle.
+
+              
+              switch( calling){
+                
+                case CALLING_START: 
+                     
+                     
+                     call_stato=call.CallStatusWithAuth(number,1,3);
+                     
+                     delay(120);
+                     if( call_stato == CALL_NONE){
+                         if( notified[call_target] == false ){
+                              squilli_a_vuoto=0;
+                              _DEBUG(F("\nCall: "));
+                              _DEBUG(family[call_target].name);  
+                              call.Call( family[call_target].SIMposition );
+                                          
+                                 while(1){ // prova a chiamare un membro della famiglia
+                                    delay(1000);
+                                    commandRoutine(); 
+                                    call_stato=call.CallStatusWithAuth(number,1,3);
+                                    squilli_a_vuoto++;    
+                                   /*
+                                    * La chiamata si interrompe se:
+                                    *  1. il chiamato rispone.
+                                    *  2. Si raggiunge il tempo massimo di squilli a vuoto
+                                    *  3. è arrivato il comadno che spegne l'allarme
+                                    *  
+                                    *  Inoltre, tramite il vettore notified[] si tiene traccia di quelli che hanno risposto per evitare di chiamarli nuovamente
+                                    */
+                                          if(call.CallStatusWithAuth(number,1,3) == CALL_ACTIVE_VOICE){
+                                              // se uno risponde prima del timeout, la linea torna libera
+                                                notified[call_target] = true;
+                                                _DEBUG(F("\n"));
+                                                _DEBUG(family[call_target].name);
+                                                _DEBUG(F(" has answer the phone"));
+                                                ++call_responses;
+                                                calling = CALLING_START; // volendo saltare la pausa tra una chiamata e la successiva allo stesso numero, basta mettere act=CALL
+                                                delay(1000);
+                                          break;
+                                          }
+                                          else if( squilli_a_vuoto > tempo_di_non_risposta){
+                                                 call.HangUp();
+                                                  _DEBUG(F("\n"));
+                                                  _DEBUG(family[call_target].name);
+                                                  _DEBUG(F(" hasn't answer the phone call in "));   
+                                                  _DEBUG(tempo_di_non_risposta);
+                                                  _DEBUG(F(" secondi"));
+                                                  calling = CALLING_START; //chiama il prossimo
+                                                  delay(1000); //dai il tempo al gsm di chiudere la chiamata e tornare libero
+                                           break;
+                                           }
+                                           else if ( STATUS_OFF == getStatus() ){
+                                                  _DEBUG("\n Allarm shut down, then stop alarm");
+                                                  calling = CALLING_STOP;
+                                           break;
+                                           }
+                                             
+                             
+                             
+                                 }//while
+                         }
+                                              
+                          else{
+                            if(call_responses == N ){
+                              _DEBUG(F("\n Everyone has called"));
+                              calling = CALLING_STOP;
+                              // TODO: mettere qui meccanismo di notifica, tutti avvertiti o
+                              //act = END; // if you want the siren to stop after everyone has been alerted. Otherwise
+                            }
+                        }
+                      }
+                      
+                      else if( call_stato == CALL_NO_RESPONSE){
+                        _DEBUG(F("\n ERROR. GSM DO NOT RESPONSE AT COMMAND."));
+                       
+                        calling = CALLING_FAIL;
+                      }
+                      else if( call_stato == CALL_INCOM_VOICE_NOT_AUTH ||  call_stato ==  CALL_INCOM_VOICE_AUTH  || CALL_COMM_LINE_BUSY){
+                                      call.HangUp();
+                                     _DEBUG(F("\n incoming call. hang up."));
+                                      delay(120);
+                       calling = CALLING_START;
+                      }
+                      else{
+                          _DEBUG(F("\n ERROR. UNESPECTED BEHAVIOR OF CALL_STATO "));
+                          calling = CALLING_FAIL;
+                      }
+            break;
+            case CALLING_STOP:
+                                return CALLING_STOP;
+            break;
+
+            case CALLING_FAIL:
+                               return CALLING_FAIL;
+            break;
+            }
+      }
+      return calling;
+
+}    
+
+
+    
+boolean _sms(char * receive_buffer, const char * transmit_buffer){
 
  boolean data_available = false;
   char SMS_position;
@@ -1361,11 +1271,14 @@ boolean _sms(char * receive_buffer, const char * transmit_buffer){
            //sms_count++;
            char sms_state = sms.GetAuthorizedSMS(SMS_position, number, receive_buffer,20, 1, 3);
            delay(110);
-            Serial.print("\n ricevuto sms:");Serial.print(receive_buffer); 
-            Serial.print("\n      SMS position:"); Serial.print(SMS_position, HEX); 
+            _DEBUG("\n ricevuto sms:");
+            _DEBUG(receive_buffer); 
+            _DEBUG("\n      SMS position:"); 
+            Serial.print(SMS_position, HEX); 
            if ( sms_state == GETSMS_AUTH_SMS ) {
                     data_available = true;
-                    Serial.print("\n      AUTH:");Serial.print(number);
+                    _DEBUG("\n      AUTH:");
+                    _DEBUG(number);
                     
            }
            else if ( sms_state == GETSMS_NOT_AUTH_SMS ) {
@@ -1382,35 +1295,21 @@ boolean _sms(char * receive_buffer, const char * transmit_buffer){
   
   if( sms_response_unlock == true  && transmit_buffer != NULL){
             sms_response_unlock = false;
-             Serial.print("\n     inviato sms:"); Serial.print((char*)transmit_buffer);
+            _DEBUG("\n     inviato sms:");
+            _DEBUG((char*)transmit_buffer);
            sms.SendSMS(number, (char*)transmit_buffer);
          
   }
 return data_available;
+
 }
 
-boolean gsmStatus(){
-  boolean res = false;
-  Serial1.write("AT\r"); //Send command for signal report
-  delay (200);   
-  // expect resp: +CSQ: 10,0 //10 char exactly
-  int t = 0;
-  while( Serial1.available() > 0 )  { //wait for responce
-   t++;
-   if( Serial1.read() == 'O' ||  Serial1.read() == 'K'){
-  
-    res = true;
-    break;
-   }
-   else if( t > 10 ) {
-    break;
-   }
-    delay(200);
-  }
-  return res;
-}
-int gsmSignalStrength()
+
+boolean gsm_Signal_Strength()
 { 
+  
+  
+  
   int c = 0;
   char r[10];
   char db[2];
@@ -1426,10 +1325,42 @@ int gsmSignalStrength()
   
   int one = r[6] - '0';
   int two = r[7] - '0';
-  return (one*10 + two);
+
+  
+ int signal_modulo = one*10 + two;
+ _DEBUG("Signal strength:");
+ _DEBUG(signal_modulo);
+ 
+ if( signal_modulo > 80 ) {
+  return false;
+ }
+ else {
+  return true;
+ }
 
 }
 
+ boolean gsm_AT_OK(){
+  
+  
+   Serial1.write("AT\r");
+   int t = 0;
+  
+     while( Serial1.available() > 0 ){
+           delay(100);
+          t++;
+         if( Serial1.read() == 'O' ||  Serial1.read() == 'K'){
+          //gsm_status = GSM_OK;
+          _DEBUG("GSM OK");
+                
+          return true;
+        }
+        
+     }
+     return false;
+     
+ }
+ #endif
 
 
 
@@ -1534,10 +1465,7 @@ void _blink(blink_t blink_status, uint8_t val){
        break;
   }
 }
-void software_Reset() // Restarts program from beginning but does not reset the peripherals and registers
-{
-asm volatile ("  jmp 0");  
-}  
+
 void print_command( cmd_t cmd){
 //  Serial.print("\nOUTGOING CMD:");
   switch(cmd){
@@ -1581,7 +1509,7 @@ void print_status(status_t status){
 }
 void print_action(action_t act){
   switch(act){
-  case DELAY:                          Serial.print(F("\nACTION_DELAY"));      
+  case START:                          Serial.print(F("\nACTION_START"));      
   break;
   case INIT:                          Serial.print(F("\nACTION_INIT"));     
   break;
@@ -1595,7 +1523,12 @@ void print_action(action_t act){
 }
 
 void siren(boolean siren_status){
-
+  if(siren_status == true ){
+         digitalWrite(siren_pin, HIGH);
+  }
+  else{
+    digitalWrite(siren_pin, LOW);
+  }
   
 }
 void beep(int f){
@@ -1627,22 +1560,6 @@ void beep(int f){
            Serial.print("BUZZ0");
         }
 }
-/*
-void beep(unsigned int cnt){
-
- if (( cnt % 10 )== 0) {
-  Serial.print("\nBEEP UP");
-          analogWrite(buzzer_pin,255); //l'ultimo deve spegnere!
-        }
- 
-if( cnt == action_routine_counter_max_loop ) {
-  analogWrite(buzzer_pin,0);
-}
-  
-}
-
-
-*/
 
 void _DEBUG(String debugString){
 #ifndef DEBUG 
@@ -1652,18 +1569,159 @@ void _DEBUG(String debugString){
    return;
 #endif
 }
-void _DEBUG2(String debugString){
-#ifndef DEBUG2
+
+
+void _DEBUGINT(int debugString){
+#ifndef DEBUG
   return;
 #else
    Serial.print(debugString);
    return;
 #endif
 }
-    
+
 void action() {
   for ( int i = 0; i<20; i++){
     Serial.print(" THIS IS SPARTA! ");
   }
 }
+void lights(boolean value){
+  
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+void setup() 
+{  
+ ack_counter = 0;   
+  Serial.begin(9600);
+
+Serial.print("\nALARM TEST\n");
+
+  Serial.print("\n N number of call: "); Serial.print(N);
+   Serial.print("\n Ns number of sensor: "); Serial.print(Ns);
+  
+
+pinMode(LED_ALARM_ON, OUTPUT);
+pinMode(LED_ALARM_OFF, OUTPUT);
+
+pinMode(LED_ERROR_GSM, OUTPUT);
+pinMode(LED_ERROR_ACK, OUTPUT);
+pinMode(LED_ERROR_ACTION, OUTPUT);
+
+
+pinMode(siren_pin, OUTPUT);
+#ifdef GPIO_MODULE
+  pinMode(alarm_interrupt, INPUT);
+  attachInterrupt(digitalPinToInterrupt(alarm_interrupt), switchAlarm, CHANGE);
+
+#endif
+  delay(1000);
+  
+//  int r = t.every(60000,  statusRoutine , (void*)0);
+
+  //memset(buffer_incoming_command_, 0, 20);
+
+  /*===============================================        ALARM SKELETON   ( SETUP )      ====================================================*/
+
+
+      if( Ns >= 32) {
+      //  _DEBUG("error: too many sensors, i pin del mega non bastano!");
+        return; 
+      }
+     for(int i = 0; i < Ns; i++){
+      // sensor[i].ID = (i+1);
+      // sensor[i].pin = (i+22);  
+       pinMode(sensor[i].pin, INPUT_PULLUP);     // when pullup, read LOW when closed to GND and HIGH when the wiring is floating without reference.
+      // sensor[i].type = get_sensor_type(sensor[i].ID);
+       delay(100);
+      if( digitalRead(sensor[i].pin) == LOW){  
+       
+      //  _DEBUG2("\nOLD STATE FALSE");
+       sensor[i].old_state = false; //normal state, the contact is close
+      }
+      else{
+     //     _DEBUG2("\nOLD STATE TRUE");
+        sensor[i].old_state =true;
+      }
+      }
+
+  /*===============================================        TELNET   ( SETUP )      ====================================================*/
+  
+/*  Serial.print("\nInitialize ethernet shield");
+  // initialize the ethernet device
+  Ethernet.begin(mac, ip, gateway, subnet);
+  // start listening for clients
+  server.begin();
+  // Open serial communications and wait for port to open:
+  Serial.println(Ethernet.localIP());
+      */
+
+/*===============================================       GSM   ( SETUP )      ====================================================*/
+//gsmConnect();
+       //pinMode(9, OUTPUT); 
+      // pinMode(, OUTPUT);
+       /*  digitalWrite(9, HIGH);
+  delay(500);
+  digitalWrite(9, LOW);
+  delay(500);*/
+#ifdef GSM_MODULE
+ gsm_init();
+#endif
+
+  Serial.println("\n\nSTART LOOP\n\n");
+
+         
+}
+
+
+
+/*
+ * Il funzionamento delo sketch  è piuttosto semplice. 
+ * Un sitema di allarme prevede due principali insiemi di azioni. 
+ * Da un lato la lettura dei sensori e dall'altro l'interazione con l'utente.
+ * L'interazione con l'utente è realizzata dalla commandRoutine(). Questa routine 
+ * 1. verifica la presenza di comandi che l'utente ha inviato all'allarme o tramite Telnet o tramite sms.
+ * 2. interpreta il significato di questi comandi ed effettua le azioni ad essi associate. 
+ *    In particolare, l'attivazione dell'allarme e la selezione di uno scenario consistono nello scrivere in EEPROM i valori a cui si riferiscono.
+ * 3. Risponde ai comandi inviati   
+ * 
+ * L'altra routine, allarmRoutine() si occupa di: 
+ * 1. leggere i sensori
+ * 2. leggere la EEPROM per conoscere lo stato dell'allarme (accesso/spento)
+ * 3. se l'allarme è attivo e un sensore è passato da chiuso (off) ad aperto (on) 
+ *    chiama actionRoutine() che si occupa delle azioni da svolgere in caso di rilevazione dell'intuso.
+ * 
+ */
+
+
+
+
+void loop() 
+{  
+  
+
+
+      
+      alarmRoutine();
+      commandRoutine();
+     // statusRoutine();
+      
+      t.update();
+   
+      
+} // end loop
 

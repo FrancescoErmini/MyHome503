@@ -1,10 +1,13 @@
 
 
+
+
 /*MQTT*/
 #include <SPI.h>
 #include <Ethernet.h>
 #include <PubSubClient.h>
-#include <Time.h> 
+#include <Time2.h>
+
 #include <Wire.h>             //http://arduino.cc/en/Reference/Wire
 #include <DS3232RTC.h> 
 
@@ -23,9 +26,11 @@
 #define SOGLIACORRENTE 50
 //00:aa:bb:cc:de:02
 byte mac[]    = {  0x00, 0xaa, 0xbb, 0xcc, 0xde, 0x02 }; //MAC address of Ethernet shield, use arp -an to find by IP
-byte server[] = { 192, 168, 1, 158 }; // IP Address of your MQTT Server. Where RasPi <nd Mosquitto is.
+byte server[] = { 192, 168, 1, 24 }; // IP Address of your MQTT Server. Where RasPi <nd Mosquitto is.
 byte ip[]     = { 192, 168, 1, 202 }; // IP for this device. Arduino IP.
 EthernetClient ethClient;
+void callback(char* topic, byte* payload, unsigned int length);
+
 PubSubClient client(server, 1883, callback, ethClient);
 char message_buff[100];
 char* clientId     = "<CLIENT-ID>";             // * set a random string (max 23 chars, will be the MQTT client id)
@@ -43,8 +48,9 @@ const char* inTopic[] = {"time/1",   //Serve a ricevere l'ora attuale aggiornata
                        };
 //-------------------------------------------------------------------------------
 
-unsigned int zona[] = {31,32,33, 34}; //pinout for relay output
-unsigned int timerZona[] = {15,15,15}; // minuti per ogni zona
+unsigned int zona[] = {31,32,33, 34,35,36,37,38,39,40}; //pinout for relay output
+unsigned int timerZona[] = {2,2,2,2,2,2,2,2,2,2}; // minuti per ogni zona
+unsigned int NumZone = 10; //valore nel setup
 
 
 tmElements_t tm_rtc; //Contiene la data letta dall'RTC
@@ -54,8 +60,6 @@ tmElements_t tm_alarm; //contiene minuti e ore a cui scatta allarme
 boolean startup = false;
 boolean MQTTstatus,modality, sensorecorrente, alarmReceiveSettings;
 
-
-unsigned int NumZone; //valore nel setup
 unsigned int scenario;
 int tm_min,tm_alarm_min,timeToIrrigation;
 int anno, mese, giorno, ora, minuto, ora_allarme, minuto_allarme = 0;
@@ -64,6 +68,43 @@ unsigned int long tmp, count;
 int tm_rtc_tmp;
 
 bool mqtt_old_status, mqtt_new_status, rtc_old_status, rtc_new_status,  acs_old_status, acs_new_status;
+
+
+
+
+void alarmIsr();
+void startIrrigazione();
+void tmPrint(tmElements_t tm);
+void setupDS3231(ALARM_TYPES_t tipologiaAllarme, byte minuti, byte ore, byte giorno);
+void setScenario(boolean modality, unsigned int scenario);
+void startIrrigazione();
+boolean RTCupdate();
+tmElements_t calculateDelay(int delayTime);
+  boolean ACS712update();
+void mqttConnection();
+void mqttSubscribe();
+tmElements_t getMQTTdate(byte * payload,  unsigned int length);
+void sendMQTTstring(String stringa, int topicnumber);
+void sendMQTTdate(tmElements_t tm, int topicnumber);
+void notifyTimeToStart();
+void sendMQTTstatus();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 void setup(void)
 {
@@ -99,8 +140,8 @@ void setup(void)
            digitalWrite(RTC_STATUS, HIGH);
            RTCupdate();
            //Relay
-           NumZone = sizeof(zona);
-           for(int i=0; i< NumZone-1; i++) {
+          
+           for(int i=0; i< NumZone; i++) {
                   pinMode(zona[i], OUTPUT); //PULLUP??
                   digitalWrite(zona[i],LOW); 
                   delay(200);

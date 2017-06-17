@@ -9,7 +9,7 @@
 
 
 byte mac[]    = {  0x20, 0x64, 0x32, 0x03, 0x38, 0x90 }; //MAC address of Ethernet shield, use arp -an to find by IP
-byte server[] = { 192, 168, 1, 158 }; // IP Address of your MQTT Server. Where RasPi <nd Mosquitto is.
+byte server[] = { 192, 168, 1, 24 }; // IP Address of your MQTT Server. Where RasPi <nd Mosquitto is.
 byte ip[]     = { 192, 168, 1, 201 }; // IP for this device. Arduino IP.
 
  
@@ -29,6 +29,8 @@ char* clientId     = "<CLIENT-ID>";             // * set a random string (max 23
  boolean MQTTstatus;
  bool mqtt_old_status, mqtt_new_status;
 EthernetClient ethClient;
+void callback(char* topic, byte* payload, unsigned int length);
+
 PubSubClient client(server, 1883, callback, ethClient);
 
 

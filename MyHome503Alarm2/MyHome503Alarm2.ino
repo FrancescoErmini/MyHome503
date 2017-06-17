@@ -2,17 +2,16 @@
 #include "Timer.h"
 #include <EEPROM.h>
 //#include <SoftReset.h>
-#include <SPI.h>
-//#define TELNET_MODULE
-//#define GSM_MODULE
-#define COM_MODULE 1 
+
+#define TELNET_MODULE
+#define GSM_MODULE
+#define COM_MODULE 
 
 #ifdef TELNET_MODULE
-
+#include <SPI.h>
 #include <Ethernet.h>
-
+#include <PubSubClient.h>
 #endif
-
 
 #ifdef GSM_MODULE
 
@@ -24,28 +23,16 @@
 
 #endif
 
-#include "Time.h"
+//#include "Time.h"
 
-//#define DEBUG_CMD
-#//define DEBUG
+#define DEBUG_CMD
+#define DEBUG
 #define DEBUG_TELNET 1
 #define DEBUG_NFC 1 
 #define DEBUG_ERROR 1
 boolean alreadyConnected = false;//we'll use a flag separate from client.connected
 boolean newData;
 
-
-#ifdef TELNET_MODULE
-byte mac[] = { 
-  0xEE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
-  
-IPAddress ip(192,168,1, 101);
-IPAddress gateway(192,168,1, 1);
-IPAddress subnet(255, 255, 255, 0);
-
-EthernetServer server(23);
-EthernetClient clients[4];
-#endif
 
 
 Timer t;
@@ -267,7 +254,10 @@ sensor_info_t sensor[] = {
                               { .name = sensor_name[23], .ID=  24, .type = WINDOW,     .pin = 46 },
                               { .name = sensor_name[24], .ID=  25, .type = WINDOW,     .pin = 47 },
                                                             
-                            
+                              { .name = sensor_name[25], .ID=  25, .type = WINDOW,     .pin = 47 },
+                              { .name = sensor_name[26], .ID=  25, .type = WINDOW,     .pin = 47 },
+
+
                               
                           };
 
@@ -367,6 +357,60 @@ unsigned int ack_counter;
 int error_counter;
 status_t old_status;
 
+
+/*=========================================================   MQTT    ====================================================*/
+// Update these with values suitable for your network.
+byte mac[]    = {  0xEE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED }; //MAC address of Ethernet shield, use arp -an to find by IP
+byte server[] = { 192, 168, 1, 101 }; // IP Address of your MQTT Server. Where RasPi <nd Mosquitto is.
+byte ip[]     = { 192, 168, 1, 119 }; // IP for this device. Arduino IP.
+
+ 
+EthernetClient ethClient;
+void callback(char* topic, byte* payload, unsigned int length);
+PubSubClient client(server, 1883, callback, ethClient);
+//char message_buff[100];
+char* deviceId     = "<DEVICE-ID>";             // * set your device id (will be the MQTT client username)
+char* deviceSecret = "<DEVICE-SECRET>";         // * set your device secret (will be the MQTT client password)
+char* clientId     = "<CLIENT-ID>"; 
+
+const char * outTopic[]     = {     "myhome503/alarm/status",
+                                     "myhome503/alarm/action",
+                              };
+
+         
+const char * sensorsOutTopic[]     = {    
+                              "myhome503/alarm/sensors/0",
+                              "myhome503/alarm/sensors/1",
+                              "myhome503/alarm/sensors/2",
+                              "myhome503/alarm/sensors/3",
+                              "myhome503/alarm/sensors/4",
+                              "myhome503/alarm/sensors/5",
+                              "myhome503/alarm/sensors/6",
+                              "myhome503/alarm/sensors/7",
+                              "myhome503/alarm/sensors/8",
+                              "myhome503/alarm/sensors/9",
+                              "myhome503/alarm/sensors/10",
+                              "myhome503/alarm/sensors/11",
+                              "myhome503/alarm/sensors/12",
+                              "myhome503/alarm/sensors/13",
+                              "myhome503/alarm/sensors/14",
+                              "myhome503/alarm/sensors/15",
+                              "myhome503/alarm/sensors/16",
+                              "myhome503/alarm/sensors/17",
+                              "myhome503/alarm/sensors/18",
+                              "myhome503/alarm/sensors/19",
+                              "myhome503/alarm/sensors/20",
+                              "myhome503/alarm/sensors/21",
+                              "myhome503/alarm/sensors/22",
+                              "myhome503/alarm/sensors/23",
+                              "myhome503/alarm/sensors/24",
+                              "myhome503/alarm/sensors/25",
+                              "myhome503/alarm/sensors/26",
+                          };                        
+const char * inTopic[]   ={"myhome503/alarm/cmd"}; 
+bool mqtt_old_status, mqtt_new_status, mqtt_has_received_data;
+
+
                                    
 /* ===========================================================  GSM (SMS)======================================================*/
                                    
@@ -420,7 +464,94 @@ boolean sms_response_unlock, sms_unread; ///
  *    La consequenza negativa è che le finestre aperte non faranno scattare l'allarme se non vengono chiuse e poi riaperte.
  *    Pertanto tale punto è motlo discutibile.
  * 3. Tutto gira intormo al singolo sensore e alle sue proprietà.
+ * 
+ * 
+ * 
+ * 
  */
+
+
+void alarmRoutine();
+void actionRoutine();
+cmd_t commandRoutine();
+
+
+void setStatus( status_t current_status);
+void setScenario(scenario_t current_scenario);
+status_t getStatus();
+scenario_t getScenario();
+void configScenario(scenario_t scenarioX);
+int associateCommand(char * message);
+ 
+int receiveCommand(char * receive_buffer, device_t * dev);
+
+void replyCommand(int cmdNum, device_t dev);
+void sendStatus( device_t dev); 
+void sendSensorStatus( device_t dev);
+void sendGsmStatus(device_t dev);
+  
+void printSensors();
+
+boolean _telnet(char * receive_buffer,const char * transmit_buffer);
+  
+boolean _serial(char * receive_buffer,const char * transmit_buffer);
+
+boolean _sms(char * receive_buffer, const char * transmit_buffer);
+
+calling_t _call();           
+
+void gsmInit();
+
+void error( error_t error);
+            
+void _blink(blink_t blink_status, uint8_t val);
+  
+void print_command( cmd_t cmd);
+
+void print_status(status_t status);
+ 
+void print_action(action_t act);
+ 
+
+void siren(boolean siren_status);
+
+void beep(int f);
+  
+
+void _DEBUG(String debugString);
+
+
+void _DEBUGINT(int debugString);
+
+void action();
+
+void lights(boolean value);
+  
+boolean _sms(char * receive_buffer, const char * transmit_buffer);
+
+boolean gsm_Signal_Strength();
+
+
+ boolean gsm_AT_OK();
+
+
+void mqttPublish(const char * topic, char* messaggio);
+
+
+void mqttSubscribe();
+
+
+void mqttConnection();
+
+
+
+
+
+
+
+
+
+ 
 void alarmRoutine(){
    
         for(int i=0; i<Ns; i++){
@@ -488,7 +619,7 @@ void actionRoutine(){
                             break;
                             }
                             else{
-                                  Serial.println("WAIT");
+                                 // Serial.println("WAIT");
                                   beep(i);             //emetti un suono intermittente. Vedi beep()
                                   
                                   act = START;
@@ -509,6 +640,10 @@ void actionRoutine(){
 
 
          siren(true);
+         #ifdef TELNET_MODULE
+            Serial.println("Invia action event mqtt");
+            mqttPublish(outTopic[1], "on");
+         #endif
          #ifdef COM_MODULE
           _serial(NULL, "allarme started");
          #endif
@@ -555,22 +690,21 @@ cmd_t commandRoutine(){
      int cmdRx = receiveCommand(buffer_incoming_command, &dev);
    
     if(  cmdRx >= 0 ){
-      
+          #ifdef DEBUG_CMD
+          print_command(command[cmdRx].cmd);
+          #endif
     
      if( command[cmdRx].cmd == CMD_OFF || command[cmdRx].cmd == CMD_ON || command[cmdRx].cmd == CMD_ON_SCENARIO_DORMO ||  command[cmdRx].cmd == CMD_ON_SCENARIO_ESCO ||  command[cmdRx].cmd == CMD_ON_SCENARIO_VACANZA) {
         
           setStatus(command[cmdRx].status);
           setScenario(command[cmdRx].scenario );
           configScenario(command[cmdRx].scenario );
-          #ifdef DEBUG_CMD
-          print_command(command[cmdRx].cmd);
-          #endif
- 
-         replyCommand(cmdRx, dev);
+          replyCommand(cmdRx, dev);
      }
      else if( command[cmdRx].cmd == CMD_STATUS ) {
       
-        sendStatus(dev);
+          sendStatus(dev);
+ 
      }
      else if(command[cmdRx].cmd == CMD_SENSORS_STATUS){
         sendSensorsStatus(dev); 
@@ -789,9 +923,15 @@ int associateCommand(char * message){
 int receiveCommand(char * receive_buffer, device_t * dev){
 int res = -1;
           #ifdef TELNET_MODULE
+            
               if ( _telnet(receive_buffer, NULL) == true ){  
-                     res = associateCommand(receive_buffer); 
-                     *dev = dev_TELNET;                             
+                     res = associateCommand(receive_buffer);             
+                     *dev = dev_TELNET; 
+                     /*
+                     Serial.print("receive_buffer: ");  Serial.print(receive_buffer);
+                      Serial.print("\n result cmd: ");
+                     Serial.print(res);
+                     */
                }
            #endif
 
@@ -901,6 +1041,7 @@ void sendStatus( device_t dev) {
  * contenente la lista di tutti i sensori, l'ID associato, il nome mnemonico, il loro stato (on/off) e se sono esclusi dallo scenario corrente.
  */
 void sendSensorsStatus(device_t dev){
+
     
     unsigned char buff[40];
     unsigned char stringTAB[] = " ";
@@ -912,7 +1053,12 @@ void sendSensorsStatus(device_t dev){
 unsigned char stato_on[] = "on  ";
 unsigned char stato_off[] = "off ";
 
+
+
      for(int i=0; i<Ns; i++){
+         
+          
+           
             
           if( (sensor[i].ID) <10){
           stringID[0]='0';
@@ -948,9 +1094,34 @@ unsigned char stato_off[] = "off ";
               memcpy(buff+len+7, &stringTAB, 1);
                }
           memcpy(buff+len+8, &stringNULL, 1);
+
+
+
+          
           #ifdef TELNET_MODULE
+          unsigned char buffMQTT[5];
+
+          if( sensor[i].state == true &&  sensor[i].sensor_exclusion == false){
+              memcpy(buffMQTT,"on", 2);
+              memcpy(buffMQTT+2, "\0", 1);
+           }
+           if( sensor[i].state == true &&  sensor[i].sensor_exclusion == true){
+              memcpy(buffMQTT,"onx", 3);
+              memcpy(buffMQTT+3, "\0", 1);
+           }
+           if( sensor[i].state == false &&  sensor[i].sensor_exclusion == false){
+              memcpy(buffMQTT,"off", 3);
+              memcpy(buffMQTT+3, "\0", 1);
+           }
+           if( sensor[i].state ==false &&  sensor[i].sensor_exclusion == true){
+              memcpy(buffMQTT,"offx", 4);
+              memcpy(buffMQTT+4, "\0", 1);
+           }
+           
           if( dev == dev_TELNET){
-          _telnet(NULL, (const char *)buff);
+          mqttPublish(sensorsOutTopic[i], (const char *)buffMQTT);
+          // client.publish(topic[i],  (const char *)buff); 
+
           }
           #endif
 
@@ -1038,9 +1209,144 @@ void printSensors(){
  */
 
 /* =================================================================== TELNET ( FUNCTIONS) =========================================== */
-boolean _telnet(char * receive_buffer,const char * transmit_buffer){
+
+
+
+
+
+
+
+
+
+boolean _telnet(char * receive_buffer, const char * transmit_buffer){
+  bool flag = false;
+  mqttConnection();
+   if( receive_buffer != NULL ){    
+        if (  mqtt_has_received_data == true ) {
+                flag = true;
+             //  receive_buffer = buffer_incoming_command;
+                    
+              
+               mqtt_has_received_data = false;
+              // Serial.println(buffer_incoming_command);
+              
+           
+        }
+   }
+  if( transmit_buffer != NULL ){
+      mqttPublish(outTopic[0], transmit_buffer);
+  }
   
+  return flag;
 }
+void callback(char* topic, byte* payload, unsigned int length) {
+
+  if(strcmp(topic, inTopic[0])==0){
+                                  
+             mqtt_has_received_data = true;
+
+                 int i = 0;
+                  for(i=0; i<length; i++) {
+        
+                            buffer_incoming_command[i] = (char)(payload[i]);
+                           /*    Serial.print("\n");
+                               Serial.print("rx:");
+                               Serial.print(buffer_incoming_command[i]);        */                                               
+                  }
+                  buffer_incoming_command[i] = '\0';
+    
+   }
+        
+ // if(strcmp(topic, inTopic[1])==0){  }
+}
+
+
+void mqttConnection() {
+  // add reconnection logics
+  if (!client.connected()) {
+
+    // connection to MQTT server
+    if (client.connect("ArduinoMQTTAlarm")) //clientId, deviceId, deviceSecret))
+    {
+      Serial.println("[PHYSICAL] Successfully connected with MQTT");
+    
+     mqtt_new_status=true; //change to red
+     mqttSubscribe(); // topic subscription
+     
+    }
+    else{
+      mqtt_new_status=false; //change to green
+         //   Serial.println("bad");
+
+    }  
+  }
+
+        if(mqtt_old_status==false && mqtt_new_status==true){
+           Serial.println("MQTT: OK: reconnection succesful");
+
+        }
+         if(mqtt_old_status==true && mqtt_new_status==false){
+          Serial.println("MQTT: ERROR: mqtt goes down");
+        }
+        mqtt_old_status=mqtt_new_status;
+        
+  
+  client.loop();
+}
+
+void mqttSubscribe() {
+    client.subscribe(inTopic[0]);
+    client.loop();
+ /* for (int i = 0; i < (sizeof(inTopic)/sizeof(int)); i++){
+    client.subscribe(inTopic[i]);
+    client.loop();
+    Serial.print("subscribe: ");
+    Serial.println(inTopic[i]);
+  }*/
+}
+void mqttPublish(const char * topic,const char* messaggio) {
+  // build the topic with the light item
+   
+    client.publish(topic, messaggio); 
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 boolean _serial(char * receive_buffer,const char * transmit_buffer){
 
                 static byte index = 0;
@@ -1183,7 +1489,7 @@ if (gsm.begin(9600)){
                                                   _DEBUG(F("\n"));
                                                   _DEBUG(family[call_target].name);
                                                   _DEBUG(F(" hasn't answer the phone call in "));   
-                                                  _DEBUG(tempo_di_non_risposta);
+                                                  _DEBUG(F("tempo_di_non_risposta"));
                                                   _DEBUG(F(" secondi"));
                                                   calling = CALLING_START; //chiama il prossimo
                                                   delay(1000); //dai il tempo al gsm di chiudere la chiamata e tornare libero
@@ -1328,8 +1634,7 @@ boolean gsm_Signal_Strength()
 
   
  int signal_modulo = one*10 + two;
- _DEBUG("Signal strength:");
- _DEBUG(signal_modulo);
+ _DEBUG("Signal strength:"+signal_modulo);
  
  if( signal_modulo > 80 ) {
   return false;
@@ -1540,13 +1845,13 @@ void beep(int f){
         }*/
 
              if( f == action_routine_counter_max_loop ) {
-              Serial.print("BUZZ0");
+            //  Serial.print("BUZZ0");
           analogWrite(buzzer_pin,0);
           return;
         }
                if( f == (delay_before_start_call-1) ) {
             analogWrite(buzzer_pin,0);
-             Serial.print("BUZZ0");
+            // Serial.print("BUZZ0");
             return;
           }
     if ( f == 0  || f==20 || f==40
@@ -1557,7 +1862,7 @@ void beep(int f){
    if ( f == 10 || f==30|| f==50 || f==70
       || f==90 || f == 110 ) {
           analogWrite(buzzer_pin,0);
-           Serial.print("BUZZ0");
+          // Serial.print("BUZZ0");
         }
 }
 
@@ -1678,6 +1983,15 @@ pinMode(siren_pin, OUTPUT);
   delay(500);
   digitalWrite(9, LOW);
   delay(500);*/
+
+
+#ifdef TELNET_MODULE
+Ethernet.begin(mac, ip);
+delay(100);
+mqttConnection();           
+#endif
+
+  
 #ifdef GSM_MODULE
  gsm_init();
 #endif
@@ -1724,4 +2038,6 @@ void loop()
    
       
 } // end loop
+
+
 

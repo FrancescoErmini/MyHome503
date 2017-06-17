@@ -16,7 +16,7 @@ based on QuectelM10 chip.
 
 #include "GSM.h"
 #include "WideTextFinder.h"
-
+#define DEBUG_ON 1
 //De-comment this two lines below if you have the
 //first version of GSM GPRS Shield
 //#define _GSM_TXPIN_ 4
@@ -63,9 +63,10 @@ int GSM::begin(long baud_rate){
 				Serial.println("DB:NO RESP");
 			#endif
 			// generate turn on pulse
-			digitalWrite(GSM_ON, HIGH);
+				pinMode(9, OUTPUT); 
+			digitalWrite(9, HIGH);
 			delay(1200);
-			digitalWrite(GSM_ON, LOW);
+			digitalWrite(9, LOW);
 			delay(10000);
 			WaitResp(1000, 1000); 
 		}
